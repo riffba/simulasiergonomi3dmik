@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Manekin Ergonomi Interaktif 3D</title>
+<!--
+=====================================================================
+ PETA KODE (garis besar isi file ini)
+ 1. <style>   : semua tampilan. Warna tema terang/gelap (variabel :root),
+                tata letak kanvas 3D + panel kontrol, kartu pilihan simulasi.
+ 2. <body>    : kerangka HTML. #stage = kanvas 3D + tombol sudut pandang,
+                #panel = pilihan simulasi, skor, postur siap pakai,
+                kontrol beban (khusus mode angkat) dan slider sendi.
+ 3. <script>  : logika, berurutan dari atas ke bawah:
+    a. Setup three.js (renderer, kamera, cahaya)
+    b. Lingkungan 3D: lantai, dinding, lalu dua set ruangan
+       (envSit = kursi + meja, envLift = rak + matras)
+    c. Manekin: rangka sendi (node) + bentuk tubuh (mesh), dipakai kedua mode
+    d. Beban 3D: kardus (dua tangan) dan karung (pundak)
+    e. Tabel sendi T: batas gerak + rentang ideal per mode
+    f. Data MODES: postur siap pakai dan sudut kamera tiap simulasi
+    g. UI: kartu simulasi, tab bagian tubuh, slider, tombol
+    h. Loop animasi tick(): gerakkan sendi, hitung skor, gambar ulang
+=====================================================================
+-->
+<style>
+/* Variabel warna. Mode gelap otomatis mengikuti pengaturan perangkat. */
+:root{--bg:#f2f4f1;--pn:#fff;--fg:#1c2428;--mu:#5b666c;--ln:#d9dfdb;--ac:#256a8f;--ok:#2a9d5c;--wn:#d99512;--bd:#d4423a;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13181a;--pn:#1c2326;--fg:#e8edef;--mu:#9aa6ac;--ln:#2d373b;--ac:#6bb6e6}}
+:root[data-theme="dark"]{--bg:#13181a;--pn:#1c2326;--fg:#e8edef;--mu:#9aa6ac;--ln:#2d373b;--ac:#6bb6e6}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+/* Tata letak: kiri kanvas 3D, kanan panel. Di layar sempit menjadi atas-bawah. */
+#app{display:flex;height:100%}
+#stage{position:relative;flex:1;min-width:0;min-height:0}
+#c{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+#hud{position:absolute;left:10px;top:10px;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100% - 20px)}
+#hud .b{background:rgba(28,35,38,.78);color:#e8edef;border-color:#3a464b}
+#hint{position:absolute;left:10px;bottom:10px;right:10px;color:#cfd8dc;font-size:12px;text-shadow:0 1px 3px #000;pointer-events:none}
+#panel{width:380px;background:var(--pn);border-left:1px solid var(--ln);overflow:auto;padding:16px}
+h1{font-size:18px;margin:0 0 2px}
+.sub{color:var(--mu);margin:0 0 14px;font-size:13px}
+h2{font-size:13px;margin:16px 0 6px;color:var(--mu);font-weight:600}
+/* Tombol umum */
+.b{border:1px solid var(--ln);background:var(--pn);color:var(--fg);border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer}
+.b:hover{border-color:var(--ac)}
+.b:focus-visible,input:focus-visible,.mc:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.b.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+/* Kartu pilihan simulasi (duduk / angkat barang) */
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mc{display:flex;flex-direction:column;gap:3px;text-align:left;border:2px solid var(--ln);background:var(--pn);color:var(--fg);border-radius:12px;padding:10px;font:inherit;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.mc .ic{font-size:26px;line-height:1}
+.mc small{color:var(--mu);font-size:12px;line-height:1.3}
+.mc:hover{border-color:var(--ac)}
+.mc.on{border-color:var(--ac);box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 25%,transparent)}
+/* Kotak skor: menempel di atas panel supaya selalu terlihat saat menggeser slider */
+#score{position:sticky;top:0;z-index:2;background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:10px 12px;margin:14px 0 4px;box-shadow:0 4px 10px -6px rgba(0,0,0,.35)}
+#score b{font-size:22px}
+#lv{font-weight:600;margin-left:6px}
+#bar{height:6px;background:var(--ln);border-radius:3px;margin:6px 0;overflow:hidden}
+#bar i{display:block;height:100%;width:50%;background:var(--ok);transition:width .2s,background .2s}
+#sum,#tips{color:var(--mu);font-size:12px}
+#tips{margin-top:4px;color:var(--fg)}
+/* Slider sendi dengan titik status hijau / kuning / merah */
+.r{margin:12px 0}
+.r label{display:flex;justify-content:space-between;gap:8px}
+.r small{color:var(--mu)}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:7px;background:var(--ok)}
+input[type=range]{width:100%;accent-color:var(--ac);margin:4px 0 0}
+.tg{display:flex;gap:14px;margin:12px 0;flex-wrap:wrap}
+.tg label{display:flex;gap:6px;align-items:center}
+/* Foto acuan (khusus mode angkat) */
+#ref{margin:12px 0 0}
+#ref img{width:100%;display:block;border-radius:8px;border:1px solid var(--ln)}
+#ref figcaption{color:var(--mu);font-size:12px;margin-top:4px}
+@media(max-width:800px){#app{flex-direction:column}#stage{flex:none;height:46%}#panel{width:auto;flex:1;border-left:0;border-top:1px solid var(--ln)}}
+</style></head><body>
+<!-- KERANGKA HALAMAN: #app membagi layar menjadi #stage (3D) dan #panel (kontrol) -->
+<div id="app">
+ <div id="stage">
+  <!-- Kanvas tempat three.js menggambar. aria-label untuk pembaca layar. -->
+  <canvas id="c" aria-label="Model 3D manekin ergonomi"></canvas>
+  <!-- Tombol sudut pandang (diisi oleh JS sesuai simulasi) -->
+  <div id="hud"></div>
+  <!-- Petunjuk singkat cara memakai, berubah sesuai simulasi -->
+  <div id="hint"></div>
+ </div>
+ <aside id="panel">
+  <h1>Manekin ergonomi</h1>
+  <p class="sub">Pilih simulasi, gerakkan setiap sendi, lalu lihat apakah sudutnya masih dalam rentang aman.</p>
+
+  <!-- Langkah 1: pilih simulasi. Kartunya dibuat oleh JS dari data MODES. -->
+  <h2>1. Pilih simulasi</h2>
+  <div class="modes" id="modes"></div>
+
+  <!-- Skor postur 0 sampai 100, bilah warna, ringkasan, dan saran perbaikan -->
+  <div id="score">
+   <div>Skor postur <b id="sc">0</b> / 100 <span id="lv"></span></div>
+   <div id="bar"><i></i></div>
+   <div id="sum"></div>
+   <div id="tips"></div>
+  </div>
+
+  <!-- Langkah 2: postur siap pakai (tombol dibuat JS per simulasi) -->
+  <h2>2. Postur siap pakai</h2>
+  <div class="row" id="pre"></div>
+
+  <!-- Hanya tampil di simulasi angkat barang: jenis beban, berat, foto acuan -->
+  <section id="lift" hidden>
+   <h2>Beban yang dibawa</h2>
+   <div class="row" id="ltype"></div>
+   <div class="r"><label for="kg"><span>Berat beban</span><b id="kgv">10 kg</b></label>
+    <input type="range" id="kg" min="0" max="40" step="1" value="10">
+    <small>Semakin berat, semakin ketat batas aman punggung.</small></div>
+   <figure id="ref">
+    <img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAdHx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys/RD84QzQ5Ojf/2wBDAQoKCg0MDRoPDxo3JR8lNzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzf/wAARCAFdAggDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3GioI/vip6ACiiigAooooAKKKKACikJ/OgD86AFooooAKKKKACikIzRnHWgBaKKKACiiigAooooAKKKTIoAWikAzyaWgAooooAKKKKACim8jp0pwOaACiiigAooooAKKKKACiim9fpQA6iiigAooooAKKKQjuKAFopAc0tABRRRQAUUUUAFFFISB1oAWikJ9KAMUALRRRQAUUUUAFFIRmgHsaAFopG+6fpVegCzRVaigBycuKmBxwahj++KnoAKKbyv0p3WgAooooAKQnsOtBPYUAYoAAMfWloooAKKKKACiiigAooooATkfSl60UhHcUALRSA5paACkJAqOWeOJSzsABWTc6sXYLECobo1S5JFKLexqvKozlgB71D9shQnL/AFxXOzaltfAJ3dT3/Ks+fXViHyxlqydbsaxo9zsjqMOeMmj+0I842tXnn/CbwwuEnhwCcZFaNh4u0u7IHmiMn1NT7Zl+xR2f2+P+61MbUUB5jfHrxWXDcQTKDHKrD2NTDPBGCKPaSF7KJeGpxkfcapBfwHqxH1FZZCngYzUbowx396PayD2UTfjkSQZRgR7GnEdxXNCZ7bGw4PbFatjqSygJL8r9ie9axqJ6MznSa1RoA0tJgGgHHBrQyFooooAKKKb1+lAB1+lOorP13VrXRNNmvr1wsUY/EnsBQBdllSGNpJXVEUZLMcAVx2r/ABE0uzcx2oa4cfxDhfzryPxh8RNR1yZo0laK1B4jjOBj39a5iLUpXI3nGOQM1Ny1FdT1LUviNqMshMbmJOwXAH51np8Rtat5QFuw65yQygj864VrlSCzopH+12qFrmDfwVU46etLUuy7HselfFYsQuo2in/aiPX8K7LRvGGk6sVSObypSP8AVy/Ka+bYryL+KTA9BVtNQBIMUjKVPUnrRdhyRZ9SK6SDMbhh6g5pwPY14F4R8Z32kXRYStNAx/eRscj6j0Ne56XqFvqljFd2rh45FyMHp7VSdzOUbFuik5H0paZIUUhIHWkLDHB5oAC4FMYkmjkke9PVccnrQALnHNOoooAKKKKACiiigApCM0tFADWyAfTFQVYb7p+lV6YBRRRQIdH98VPUEf3xU9IYUhGORS0h9KADcKCewphBJqQdKAEAxS0UUAFFFFABRRRQAUUUUAFFFFABRRVO61CC3JUtuf8Auik2luNJvYttgDJOMd6zrzVI4zsiIZj37Vl3WoTTsQGwo5xVKaQqFLMfVGA/Q1lKpfY1jS7lie7M+796cg9emKrYkuE+VioPGRxmoJZC5AXC56jHek851IC5wPSsmzdKwNptwVYqw9vWqYt5Ffy5oSCO+ODWjFe3G7lT7cVZNyHUq+eetRYd2YN9o0NwMLEvqe1cZq3heeGRntQy49K9OgKw7irF8n+LkVK8sW0b4lOfbrS5R81jxiPWtX0dyrM5UcHtXWaF8RUbbHdHnvng/hXW3mjaXqUZ+02i/gMGuQ1r4ZQzFn0u4CHqEf8AxppBe53en6zZ38YaNxyOh61fGcZUgivDZdH8T+GX3+XJJEOcplv1re0D4iNvW3vdyODgh+CKYtD1FkRs8YPoaqyI6tlTzUWn6zZ6ggKSgkj1q9I2F/vL6igCWx1TymWKUlh6+lbcciSoGQhgfSuYaFG+dDzUlneSWz8n6r2NaQqW0ZlOknqjpen0oyKhhmS4iDxnIP6VIorpOYXr9KdRRQAV4V8aPEJ1HU4tNt5SLa35fB4Z/X8K9q1aR4tNuZI8hljYgjtxXy54qmafVrmZjnJ49BUyfQuC6mPLsD45/wAKkjIAygz7noK0NA8NXWtK82/ybZThpmBJY+gFWtX8LXOl232hJlubYHazAEFD7jtUc8b8t9Tb2U+XmtoZL7XT+NvftUKWhlcBenpip4IZJmOThF6+grR02znuJwLWMsB3A5NNysJRuXdK8GC+AYTlD9K1z8Nr5Yz5N1G/p2ra0O0u4AolRvpXcWefLAYdq551X0Z0qlHqjxK+0DWNMb/SIXwvSRK6TwN4tudDuxE8vmQv/rIm4/Ee9elyxxyKUkUMD2IrA1HwHZ6pfQz248qQH5to60RrNuzJnRSWh6NpWow6naJcQHhhnFXOBWdoWmjS7JYAScetXX+9xXWttThla+g5jngU0DPFAz6VIowKYhFXH1p1FFABRRRQAUUUUAFFFFABRRRQAjfdP0qvVhvun6VXpgFFFFAh0f3xU9QR/fFTE9h1pDAn0oAxQBiloAKTkUtFAADmikI7igH86AFooooAKKKKACiiq15drbpgHLnoKTdgSuTPLGhw7AH61Vm1GCPODuPtWHeXMjHJfknk1SNx3Y98CsXVfQ3VJdTYutUkkX5flHoKyS7SMWOBk9z1pXBYDapK4zgnn6VDI8SZWTG9clRntUNt7miSWxJI7Lu3YRR93B5qBpfOkywOPTNZ8l2ctyAzE00yt1Jb7vr3qLlqJqq6orM5UHtUkUnH3BnrWP50Z2rIcbunPSrC3cEe75yccUXHY2UJcdAKcEBIBxWUNSh4AbBPSnw6nGzcuoz/AIUE6mqIowMYGBSFYmIZiAKpyLJNAGhIZT12msy5a7iXgkev86G7DsdCVhIGGHWgJwCTgmuNOqXKMVdSCBx700+IZUY5J44GehpcyHys7YqTxwR3rE1rwjousqTd2aCU9JE+VhWbF4l243Fckc1dtvFVtJkSOAR60+ZCscvd+CtX0VjNot4bmFeRDJw2PY1c0fxpJA4tdUhaKQcFXGDXXQalBNgiQY9jVTVdG07XoSLyFWI+7InDL+NJ+Q0+5bguILyIT2cgY4ztzTBdRPL5co8tz0J6GuKuNG1fw3KZtOkku7ROT/fX8O9amneJ7HWYRDe7Uk6bhxg1NyrHYWl49m/y8q3b1ragvopcBjtY1xEU8unhRdYltc/LMvO2tiKUNGHRw0bDgitIVGjOdJSOqB9fzpaxrK/MbCOZsoehPatcHjI5FdUZKSujklFxdmZ/iQkaDfYOP3Lcj0xXyrr7sl7JCx+62W+vp/OvqnxIxHh/UCvX7O+P++TXyjqBNxqku85LzEZ/Gk9y4bWPZfCMVp/wjmmvENsQgywPdu/65qq0lpc3V+ux3gkABR14qz4YASztrYEfKgIU9/WrhtNmrqzp+4IJGBxnHevOk7s9ZaRSPLdXtJIrw20CmKF2+UYxkV3fgbTI7a3LbS3H3iOppuv6OL67t5EXKx5yAcV0+mRrDbRxgAYGOK2dT3bGEYJSuW1iUnAUU2a/htEzKGwPQZqcKGGMnnuKw9T0abyJhBcSGZx+7Z2OAazVimy1/wAJDpjEb5fL9NwxXQaPMkssUkTAo3QivPNE0m4km8vUkMgPqM7T/hXcaPtsbm0tBGcyEkEdBVxjeSsRUdou51jNn6UgXdnnilUZIqTpXeeYIBgUnI+lOooAAc0UhHpQDmgBaKKKACiiigAooooAKKKKAEb7p+lV6nc/KfpUFABRRRTEOj++MVMBioY/vip6QwooooAKKKKACkIzS0UAJn1paKTp9KAFooqOaVYY2dzgCgCG/u1tYs8Fz0Fc3c3LMxZmJJ60t9eGeRpCeO2fSsq4l6rz7ZrnnO+x0whZEk0xfg96geXZIuw8L29aqtKQCd2KgW5GfmOKxubWNCW4UxyCJ3Jc9+3OaqSy7S+7PQAn1qGWdAAQT1AxVWe6XEh9+VzQ2CVi0ZRn7gJA4NNaZFQKTk9az3mLfd6svBFQNIWIBORjk+9K5Vi5cODhk5wOeaqPNggBmBqNo2KcFuBxz0qLY2AWJPalcBZJncAgkEHnmo/NlHJc/wCFSKvzfKDg+vrTWgbJAHIpAS22pXduSqTN6jDVpW3ia8+7IQ/+8Kwmtp1+6v0pptrjKuAcHtTuKx0x8QI5zLaxMcd17UNqGly432Edc8LS6cBgn1yanSwuO/Ge1IDZb+wZhmS12+u1yKi/snw3J8wadc9MSGqEdlKp+Y9uhqZIXTIbgZp3GaEOl6Uhxb313GOnLZq/DbbeLfU5B3+dQQaxYyUA4B/HpVjzFAyCOtFxHQ28t0mFe5hcDrlcZrB8R+DIdWl+16fKlle9SUOUf6inrdqDzNtUfpSeerSYiuhvxnANFx2KtjF4h0KMjUYUurccMYzuGPpW9pU0DjzbGTEbctAx4H09Krx3l9DHuc+cg4biqEjWq3DXEZNpOckgH5GP07UhrU7BGDoOMgdCK1NIvRuNu7cD7hP8q5rSJHe3VnYAnsKt6fHcR3c0lwVC78xAHkj1q4TcXcmdJSjY6PW1RtIvRL9wwPux6bTXyZeYjucqc/PkY5r6kS6+0JPC+WiZCjH6+leL3PghbPWpFZw8AOUP94Vu6sWrmEKMlKxf0O8e4tIZ41ZGAGAa3v7VnmdYpYtmBkt61FY2cdvGqKOFFMvmw4I4ridmz0VtYuod/INX7YEKMmsW2nwRzWrBMCB6UyWasL1YYo6bWwc+tZyMSOKieZ2bYhx6mlcVi1iGNpIgwXPccmtbRY4Xu0kIJdI9qE/rXF3V5JptxIXhkmiblSnJrZ8M6yt7LC0UUi5bABXB98itKcrSRFWCcGd7RRRXoHlhRRRQAUhGaWigBM44NLQeab0+lADqKKKACiiigApCfTrRnPSgDFACEfKSeuKgqw33T9Kr0wCiiigQ6P74qeoI/vip6QwooooAKKKKACiiigAooooAQjHIrmtf1HfL5MZ4TrWvrN6LKydwcORha4KaZ3Ytu+Y8kmsasraG1GN3cmkuc5559KovcFywzn0J7UjShYyQc7jiqUhCksMYrnZ0pE8kmVJIOccnPFUmcjcM5OKJZi3Bbgdu5qFpMdcc9xSuMkWbenznBHPy9qjOCzEY596gHqSfQAUO+GXP3TxxSuMd5gGwk9OMjmklB3HLDB9qhLZ+ReBnpQQTmkBaj+4d56evf6VZt/JVSpXryPc1QiAXb8zN9eatxo2flIBNADyycgqPapSCRuVP1/z7fnSJBsfJP3gQc80+O5j3NGeo6Z7j/OKAJY4wcZ6/TrQIkK4wM5IxVZrvGdy7cjk1n3WrCFuQT+gNAG1HhAS3GB096Y90gA5Hy8E1ydz4gnU/uYt2ehrLuLvVroHy9yq3ZRTUbibsdndalHFy7qoxySe9Yt14mtfM8q3dp2PAWNSxrJsfCN/qDq2pTvHGecFsk12umaFZaVCI7aBSw6sRzVPlQtTnjc6rIhkS1MUfUbzyfwrJv9U1bzfKg3F24+7XokixxDc+08dTVaxsIrudpVQCMnlsfe+lEbt2SCTstTktL0fxNqZ2vPsT+J2HA+nrXU2Pgq6iXfPqspOMZRBxXYWVsAoAAA7AVpQxhe3B6iupU1bU53N9Di/7F1vTI5GhuobpSOAy7SfSuX1rxMhRtN1Wwkt7piF5GM89jXrFym2GWLsBuX6DmuN8d6NFeXml3ToDsmDNx6DP88VM6UUrlwqSbsT6TIyqGZumMD0rVilkF15jMSp7Vm2iqy/LxxWhAGZdrDJXuPSuI7Wa1vN5ySIp2k9KralAktmIo0VpP4Seue/NQwKxPB70TymO5jiIZzjJwCaq+mpCWuhjSSWsIA81pD6qMCqF3snI+zsXbrsxyK3H0QFmktcgHny3HT6GsK982zvV/dmNumcVBqVZFkgcCRWU9cEVfsrjJANU7sl5CzMeQD+YqusjQSDnimF7nXwSjZzWZKdSN6/kvGsY+6hHX8aNNvEmwu4Z9KvXELHDAHPqKFa+pK3I7GCXULlLa5iKuSOQO3+Feg2lhbWqjyYUQgYyBzWN4UEUsZcx5lj+XcR0ro67aMElzHDiZty5ewUUUVscwUUUUAFFFFABRRRQAhGOlAOaWmSNsI4yTQA+m9fpSI+4kEcin0AFFFFACN90/Sq9WG+6fpVemAUUUUCHR/fFT1BH98VPSGFFFFABRRRQAUUUUAFFFU9VuhaWUkmcNjC/Wk3YErnK+Kb9prwwocog4x61zshYOeT9asTTea7OTliaqSN3HUVxyld3O6EbKxFMW24LcZ7d6gZsrjqKfcYIJbgAZquzenTFRcsrMw+rZ705zlNx/EelMmABZWyQR1pilWj657E0MAy2Tt69+eKHYeWwxkjnFQsAG9wc07OMbl79qQw3DcMgYYdacAvPJGOaiA+YrkZByBQrlD0AB/WgCVOXPT6VP9oKBehPcVTVikm3JKn9KYQUY7ycH1GeaAZuKWba5Y888VHJFMcGLuc5xUen3Kp8rDIA71cW8RJdoHynnOOhoEUzp9xOQWJXvz/KkbSYj/rWyD3q/wDa0IIJOOnHamm6j4Kjk/jSsFyvFpEDYUoOmRxVqG0gtIwu0bQaha+w2BnI/KkNx5keWPXsT09vpTAuySouApG09MVXuNQS2hYysEVf4icViXurJApB+Z+y1yrS3XiHV0ti58sHJUdAKuMOZkylY67T55tfvP3TMtkp+Z/7/sK7yxtQkQwoCrwB6Vl+H9NS2iSKJQEQYFdRHFthArqhFJaHPKTYkfyKGAzirDE7Q8JBzyM9D7VAuQBnp61H5htm5BMD8kDqp9R7VoQTyTLIih8qCcKfQ/3TWT4hUSR28Z6hv6VoTbJI3BYFHHUH9RVeXTZLopLLNhlXAXH61NRNxaRcGlJNlG3tQgBxVmEYZh61N5b24AYbvcdKFZWb5uK4LWep3XTWg2I7ZQB0pkdy8l7J5cJcA4DDpxWf4k1SLSLCS5b5mAwijqzdhUPhzULi+somC+UpUfM3ekwSOlRpWOG2gegOTWXrkETW5kZdxQ5CnsasZNuwZX3k9SetO1KPztPmI5+XcPwpMa0ONnjdnLnv1xVd4mfJ6mtOMeYCv610fh/w3BeQia4kO0/dVeMj604xcnZCnNQV2cPDFPBIroDj0rqNLvyUCygE9h3rr08M6WnWAt9WNT2+haZBIJIbSMMOQa3VCXU53iY9Czp8CQ2qBUCkjJ+tWaKK6krKxxt3dwooopiCiiigAooooAKKKQnH1oACcUhQN96lA9etLQAwKE5A60/rRSEY5FAC0UgOaWgBG+6fpVerDfdP0qvTAKKKKBDo/vip6gTlhUwPrSGLRRRQAUUUUAFFIWA6mmM2R0oAeTiuO8YX+6cWqOAE5Y+9dVc3C21pLM5wqKTXltze/aJ5pJOS569axrSsrG1GN3cWR1Ln/OahJCluuPfvUXIAHr+lJIxYciuU6xsoyzA9COKgZwiNnkDqalcjYHUg4PftUUiHcyk5z0xQBXccDn6VBuGSByc56VM4YqR/d7etIYxtyOcHNICuxDEc5B6d6YW3Ic9e4FWSq4OBg9qryMQ2cdeDQAZLYYDBHH1oAO4nt2pu0lsgfp0qdUyOc5FAwRA4PPzdh6imyxsy8fn7U9DyCp/+tUrEKOcYP6UAV4wQwU7twHB7MKnLb8KeB2pjx7kO0/THY0KrEBsYIPzZpiELSq3l8+zCpIPMO3cOc9Kl25UMe3U5pkksURLDj1z/AJ/zii4CuRGCvG3nvWXcXkrl1hyM/eJqS4lecErkr9KZcCO2h8wnJAzmhAYmsSrawZBy7Dr3rW+G2nGQzXbjLM2Aa4q+uXv9SVVBMatnivZfBOnC10qEbeW+Y10wjZHPKV2dRp8GyMcda0wvy1Hbx4UcVOFxyK3SM2VyuGIzj60xh1B/EVYkA5x+NVSVnDxwzReaOqFuR+FOwiCGATXBx/qEOSPVq0dwGfSq8dxBFiDOxh2fjP8AjT3Ix8pzTASRucCs7WbiOxsJLyUBY4xl2x0q8oLc+lOvEieznSdVMTRsHD9MY5zWVSCktS4TcXoeR+INXn1iwjuIVdFFyVQ9wFXkn67h+VbWgapJ/ZiKpWRoV2lVI7VQ1/TrdtDsrB5g+4vP5kWFHoBj29BWD4KH2dLm9ujttbfBDHgM5OFH9T9DXM6fu3R0Rq+9ZndaPqs13NIJ1KurlWUNnHtXY2xE9u0Z7rivPNKYJD5iDLu25mHfPeuv0m7LBeaw2ZuzL0SGx1C7uLaC6+0z2r7ZovuhSDjnuRXa6UfIkPznceMdh9BXlui2r6N8YLrlvLvlLqB0IK55/EGvTbM7p3PYCu2nCKSaOKc3K6Z0EUokHvUnuKx0lMa7skjNXrK583KHqK2MGrFoHNLSEZ+tAPY9aCRaKKKACiiigAoopCew60ABP50AUAUtABRRRQAUUUUAIRmgHsaWkIzQAN90/Sq9TnIUg+lQUwCiiigQ6P74qcjNQR/fFT0hjeR16U6ikxigBScDJpCQBmkYjGKZigAJJ/GlVSetKqY5NPoA5rxvfC3sEt1PzzHp7CuBRtpZSBk+3WtnxreCXXXQklYVCge/esItzkEMPauOrK8jtpRtEejfuw+D9KidvMycng/hTd331z15qLef4jx0NZGhMij5g3II61GfugAkkdz1pqSshCk4IORn0qR8EAKRzz9KAsVJxtkDAkBuD60xXIUpzk0+ZCW2vjjp702MBgRjaV6AUADjABySR0pm0MPm6N09jUoI/wCBA0i4CsBgD09KAIVBzzjjqDTwpHue1LIjcZGfX3oRcjAJ+tADGJDbucdxUmVOMdD1yKCrFRnr0ODSDk4IyBwTnrQBKm0EjnBOKdGMMwPAP8VQxnEm3nHf+lWtjSZAz05AoGMaX+GPqeDmqE0ZL4GOOuauNhRhvvetMOyNS8pCgjn1oAhjH2dWZ/udRmuQ8R6qZCYoThc81p67qGyPCsQOw/rXO6XaPqF4HKllB4A/iNbU49WY1JdEaXh6xk2qORuOSR1Jr3DSLYRwRoB91QK4DRNMMdxAjgAlhkV6jYx4UV0RMnoi0gCimvJtqQ8CqdwGIO0GtCDO1m9mVPKtVLSvwMVwWtabcrfLdx30i3SjhoiQB7ZrvY7PUZFkkKRxS7v3ayISHX0JzxTL+yF/p/nxQrHKMh4yPukUMCXw7eJq+kxfbUUzqNshHcjvUlze2lveGzFwpkUDKnjHtXO+HJpLa+kiIC/MMgV0V5Yo1z56qnmlg3PU0rgXI2Qpuz25xVDXZC1ssLSD97xtIzlc9DV5XET5YAbxuwKyr0ma4Lt3+77VLVxo4Wa7g/tuVtQtjJDBlY4ojtAx0/lXNeItYW+tfs0FvFZ2UJciCLueRuJ7mun1a3/4ms5xjcxNeZ+JpjBdTW6kglzn6VKirlSlodd4T1yBWXT45fMeNdwPYD0/WvQtOulwC2AfyrxDwrDIbmMw7UuC4272271PB616taRy+SrO27cuRs56dRn1rCrSbl7pvSrLktI6DZBc+JrOZTi4EDL8pAJGc9T6V1NjHsR34O88GuCEUjQ7kU+b/wAs2XqV69e1dposs0lir3G7cefm6j2renFxjZmE5KUrosOf3ZH91jVmxk8oxsR1/U1Xk2hSWIAPJzT7JxLMjIC4HAPYVoSzeoIzRRQZCdOvSlopMY6dKAFopM0E9hQAE+nWgDFAFLQAUUUUAFFFFABRRRQAUUUUAI33T9Kr1Yb7p+lV6YBRRRQIdH98VPUEf3xU9IYVHIeetKzccU3BJ4NAB36U5BxTlXAo5H0oAWkNL1pD0oA8f8RyeZrV04PHmsMmqUbqQu09OpNLrB36hcYOQJD/ADqnGSO/B6+1cEnqegloXSuED88HBx3FQNyRgcHvSpP5blS5bIpDk5XseakYhVlYtn8PSn79wC5wcZxTpMbA45xwajKkHcvSgCUqHQP/ABCq02RtcHgelSLIUxjkdaRkXtyp5AoAYQAodcH2ph+ViT0oI8s8ZxSOdpAz8p7UwJN2B1+lOWQLGvIz3JqrlssoyD2pEcg7ZOT3xQBakdS/B+VuMioXBH3uvvQG2uwbkdjShgwIbk9j60hixPk8kZHGPUVYSYRr94exJrPcbeQcEHmo5HdyNgyfWmIuT3UQk5+ZsZ2is7ULgRR+bcNknlEzUd3f21omBh5SOec1yt/qMl1L5ZY5Y4HtVxhcmUkiUW91rl4wjOyLPzSHov0rttH0+30+3WK1TkDmRuprL0G2xboNu2MdB6+9dBGGxhRhRXQlZGPmaGiru1SEfU/pXdrKY1CRqWbH5Vw+gLt1SJj7/wAq7uE5T5cBO59auJEhAk8vLOI17nrTra3KTvI5yg4QMckn1PpVW4lmKPNyuBiGP0/2jU8c2AoY5bYMn1PrWhBZluI0YLKWQHo3aocLG8uCGSTkY9aY7iRSjDIPaq6x+XtIRjnj6UrjMeOJIvEUqqi7WUFl6sp9a6GTBZOhbjBz1rmo7jzfFxhQZKx/M+B09K6FSGRXJxsJB+lTcCO8TEEJHYkZrPu/kEbe9WGcucZygJ2iqmrnbbqe+4UDMPXLfF3vx94A14f4pOfEF6Ac4kIFe9a6yrDHIxx8teI3Vl9pl1HVZzshMjmLP8RycYoJlqd14KsNO1Lw5ZS3lpFLKm5N5GDwxxyK6o+H7aS2xpzPZSqwYOjEg/UE1x/wrm36LNCT/q7gn6Agf4Gu8knMFvvV9vbGKClsWvh/ptzax30+oSGR5Ztke7oFXuPqSfyrp7phEzFjhetR2cSx20aRcKoGPcY603VIBK0MkmTGvVR3PakgbuMgH2oF2Bx2B71etFJO1cBgapLJjG1enSrkbbTHLnax7HvTA2h0GaWkU5APrS0zIKQntQT2HWgDFADMHNSUU3kfSgB1FFFABRRRQAUUUUAFFFFABRRRQAjfdP0qvVhvun6VXpgFFFFAhVOGBqQsTxUa9akUEn2pDEHOBUgAFGB6UtABRRRQAhGORTJmxC57hSakqC9/49Jz3EbfyoA8TunBuZmJJy5z+dQgAkgHqasTxGQGTPUmqTNn73bsK849JEpwemCw4z6VKrFsA4yOaiDBgCp+tI4PWgTLIYYwRwetCuOVquJGZOh9wKFb5iGBGehoAllYq2McHsKRWz8vGD09qGOV4A3DiogSRzmgY5xxhjz+lQFgAVPfoakaQFQrHHoagkIztY0xD2YkDJ7dqjdsDevWoHuFU7GbjoDTUE8gwqZ+tAFjzsj/AGaYZW6KCfTFSpYkJmZ1THZulUrjUY7ZmSFMkH75PFCQXLHlkKJrtwkY7elZF/rICmK2O1VzhweTVLU9QkmkLuxJ9O1QaPpF5rszLartjT78hHA9vrWsYGcpmdd3hyfmySa7rSvC9paQxzTRCeZlBLP2+gqnF4MS1YSTZlf3HSuwDFbdAwwcYrZIyvcjgWIJhI1XHYCpQBUcfJJ7mnK5PBpgWbFtl6jfUfpW3DezlkSM7QpzmuegcLcRntkVoXcrI0MEXDTN8zDso61SJZtre+a7MTkfdFOtGMsQdTkjII/HFVIkAHA6sD+pq1p/FsoDbdsjZHrzVElo4BIyRkEFvSmuxU7AT8o9etI7s+ck7T2qEt/rcfwrikBl+H4TLrd5dn0IU1vXJ8uFIQeSPmqjahbCEAD9453EegqTcZGLMck0DHItZ2vPiKNQeSa0GcCsLWJxLdRwry2cACgCp4lje5tIoYyfu/Nj0ryvxpIq3T28S7IoVCKoGB7mvYboKAN5wFU5/LFeNeLcv827I3YGfSl1B7HS/CmGSLTbuZ1AjkkAU56kDn+Yrtr9ka2YEgfLkV5/8Lrzet1YE5ZP3yKe46N/SvTLTy5ozE6qePlyKYlsb3h+9S40e2kzkhdh/Dip9UkvHtQbFUZl+Yo/8Q9M9jWF4PnminurGXY0UQ3JxyMmukabBwMDJxxTAracftNqk7qVZhyp/hPpWtDbJdJGrHAQ5OO9ZGnGSOeS2uFz8xZCOhFbNknlXIK52sORSB7GmOBikJ7CgnsKAMUzMAMUtFFABRRRQAmMcigHNLSEUALRSA9jS0AFFFFABRRRQAUjHApaY/6UAI78YqKpcZB9AKipgFFFFAh0f3xU9QR/fFT0hhRRRQAUUUUAFRzrvhkT+8pH6VJRQB45DGMSxtwVcis+/symWQGt/UbYWfiC8tnBUFyyH1BpJolI2leMdTXnvRtHop3VzlIpAj7SOtWGYEcc/SptR0zaSY+nYDrVG3LpJscYHrSGOEhV+o/wp+fNU54YcilmhG4svLH9arskgYAIzH0HagB6TEMVfgjuaZNMF53c/wA6nisp7jJk2gL1IPaphaW8K53CRhzigDM8yWXIijLZ65HSp10yV1L3EgUDqoODVoXa7jtjEZ9qd5MkxDKTnFOwii0Vrb5EQLkdM9zTY7uVmKIoCn+ECtEaOZSCwY/XitnSvCcspBitjz/Een600iW7bnKG1uLgk7XPruOadF4emvDhlkH/AAGvVrbwtaafAbi/mAVBlgOAKx59cinzHpcCw23I3kfM49fatVTl1M/arocLD4JhaZftEzNGDyoHX8a6SG0SwtxDYxLFEvRVHWrQ+Q896JG44raMbEN3KQuGJ2yfrUc/zDP5VJJgtk4ph7g0xEEXLjNOZcMaQDbIPQ1Ky5JNAEW7aRWq2Hkil9FyPxrM25q/bSZhCnqvFMDatMMqn6fzq1boFXH/AE0Y1l2EpztzxWvZxsYF3dSSf1p3JH7CVyB0qnDuhE0s3Rn+VfWtCaWO3TDH5uy96ypWaZ97HnsPSkA12Z2Mjnk1ZtvmUt6VXlG2P61OjCGzyeNxpgNnCpC0jN0FYtlbNHI93cZMsn3VP8K/41eimS9fYvMSPjPZm9PwqO+kMbur8EccUCMfWrlRCwLFQRivMfFrwrBFHCmcvksep4/+vXdauWmfk8elcP4ziEf2ZQOzH+VLqD2HfDA+X4laUchYTkfUivYJLMHEtvJhTyB6V5V8M4E8y5ueN2Qn0GK9UsCHiZSeRTCOxL4bjP2u+nzuJKoMeo61voN06gjkcnisLQR5T3UY4KyBgR24rchZjIWY5OOtAF6LY0SO4G4dDV60GX+lUYiGhZR371c005AHoKAexfAxS0UUzMKKKKACiiigAooooAQjNJkjrTqKACim4I6UoOaAFoopCfTrQAE4+tAHrQBiloARvun6VXqw33T9Kr0wCiiigQ6P74qeoI/vip6QwooooAKKKKACiiigDh/iBZGO4tdRUEqf3b47HsaxUYunX5gOnrXf+JLVbvRbqNuMJvB9xzXm9pKrqMH/AOtXHXjaVzsoyvG3Ymwjj5hzms+9tVl/gCgdx2rSbpkEZFNLicABR7t/hWJqjHS2bcyH7y9+wobNsNwRW7EZOfrWoqC23EEg7eBnP51k+TPc3OSGJZqYEkXnSyB84Q9sVaTTGuWwkZJPXHNdFofhKebD3e6KM9j1P4V2llp1rZIFghVcfxY5NbRpORjOqo6I8/0/wZPM294dqn++cCuis/BttGQZ5N2OyjFdTRWyoxW5i60mULbR7G2x5duuR3bmryqFGFAA9BS013CKWY8AZNaJJbGbbe5zXjiVTZx23mKDISSmeSB7elcl5IjMYUYAFeeeNfG9zdeMn1GEt5NsxjjiJ4KDqD9a7vRtasdas4bi0kUnHzx5+ZD6EUmXF9C/MmVBFQTjaq5q9t3Lmqd0pMfuKCilIPmHpRtyaX74B71IFwKBkDxZ5FSGLHGefSpNvNPGSf8A61AFcR1IiFWyOnepFUY6U8CgRJbEq4IwfxrZXUo4YgiDdKeAOwrG28ZqxYRBpc9hQDLDFnYvIcseppUOWxUzwcEiq0GfOI9KYh1z95Vqlr88rC30yzP+kzj/AL4Xu34VdmKmYbiAF6k1BpcJknuNUnH7yf5YQRykY6fn1oEOW3itLRLdP9XGOvcn1NZN9Kxzk5rTvGznB4HWsmf5mpMaMuRRne3NcX48jl8y3eSMorIdnvzXrnh/w++pzh5FxAp+Zj39hXLfHm1jtrrSY4UCosDgAfWhCk+hxnw0lZb67gx8rKGB9xn/AOvXqFi22QfTBrynwG5S/nUddoYH6H/69eo2cm5gfWmwjsado3lX0m0Z3Jn8q14pAU3DHIrLhjDSox984+laKKixqg696YGjaN0z6U3TL9bfVJLORuN2Fz1GeRUdk++PzPU8fSop4UuNYgG35tgO4dQQeKBM62ikHQZpaCAooooAKKKKACiiigAooooAKaeDSk4pMZoAA2aUDFJjbTqACiiigBG+6fpVerDfdP0qvTAKKKKBDo/vip6gj++KnpDCiiigAooooAKKKKAMfxck7+G9QW1JEphOCOteTaNes48maMxyLwSehNe2XW37NKH+7sOfpivDfKkTUpWTk7idpON1c2IWx1YfZm9GrSqrjHzcYz1rSTSr7dEkdhIGkONzDhR71s+EtCxEt9eqwdjuSNjwPcjNdbgVMKN1dhUrWdkcrbeDYiN15cOzHsnAFbNjoljYkNBAC4/ibk1pUV0RpxjsjCVSUt2IMUtIR+dGexqyBaKKKAGSyJFG0kjBUUEsT2FfP3xG+Jd7ql41po8z29lC/wArKcNKR3Pt7V3Pxk8UDT9N/sm1lxPOMy7eoX0/GvnqdwzE5OSaBiXVw95dNLOfmY5Y4xk1LaXVxaTCazmeGRejIcGqp5zQrFTkUCPUfDPxFgkeG01dGjmchDKB8hPYn0rvJlVuR3HavnVykoz0avQPBHjlgY9M1lwRgLFcH9A3+NItSO2niMTEjpSpIMdavFVdezKage1UfdHFBVxqkU8Y7U1YSKkEBPK8Uhht4zTgMCnpE4BBFOELbTlaLANIITNW9N5Y1WyUxxx6Vo2MQA3AdRTETzHahPtVS1XJLGrF6f3O7tWVdTuGjtbYgzy9P9kdyaAGuHvtT+zoQLdSBMw/iP8AdrSuZNh2LjA4AHanQ20dlZiNef4mY9SfWs9WLyMxOcmkBHdNtTaOtP0PR5NTugMERKcu3p7VNY6dNqd2I0GFB+ZuwFd5YWcNjbrDAuFHU+poWom7D7W3jtYFhhUKijAArxr9oAf6dpf/AFxf+Yr2qvGvj4AbvSm/6ZyfzFUQjzTwirLqkj9FWIlvpkc16XZyEBW7fyNcp8JtPi1PxNPaTcGS0cI3oRg11Zt5tD1GSyvozszwfVexH0pMuLN+3kHlg9cHNXGlMi7UGGfgcdKoWgRSAGDKRlSO4rRiYDDD6CgDQj/dxrGvQDFN8MsdQ1O6uxzBCfKjOOpHU/nSNHJNEIYATLLxx2HrW/pljHp1lHbwgYUc+5pibLlFIDmloICiiigAooooAKKKKACkJxQTigDuetAAB3NLRRQAUmMdKWigBAc0tIR3FAPr1oAG+6fpVerDfdP0qvTAKKKKBDk+8KmB7HrUMf3xUxGaQxaKbnHWnUAFFFFABSE4oJxQB3PWgBrruRgecjFcTonhEyag15qCAQhspEw5J9T7V3NFTKCk1cqM3G9hAAAAOAKWiiqJCiiigAoIzRRQAnTr0qtqeoW+l2Mt5dvshiXLHGatVwXxivxaeGBbq5VrmULgdwOTQB4b401iTV9cvLzkJM5KjPQVzJ+taF6/zYbris5vm+6ce1A2GM03a5yFGSBnj0ow69VP4Vt6Rbm1mtrkzBZZwfLjaMlWB45PbNAijZWIkEU080cId9qI+fnIPI46D3q3rcFu6G4iJjmEmzyTtGAPQD+vWn315b2+CojuCJC6JIp3Qt3yRweaw5pXlleWQ5diWJ96AO88HeOG0+NLPV98kC8JKOWUeh9a9Ps7i3vbdLm0lWWJxlWU5FfO6Trj5/zFbHhnxRqOiXYNq3mW7t88DHhv8D70FKR7uFBPIqVEFZuj6taa1aLcWsg3Y+dM8qfQ1eLMvSkWXY1HepFRckcYrP8APYcGnxSNI2A1FwLEsUZBBFSwuqDHbFQbGAyOaZPN9mt3mkAVVGSTQAmrXaxWxVQXdzhEHUmmaRYG1Vri4Ia5k+83oP7o9qTTY/NC394CGkXMIxjavb8TVqNg0Zk59KLgE8haKTNQ6VZSXcmxB16n0qe0tJb1xDGDgnk+grrtPsYrGEJGOe59aW4m7DtPsorGARRD/ePcmrNFNzk4HSqMwJz0ryL4+Jg6O/tKP/Qa9fAxXlnx5h3aVps3dZ2T81z/AEoGjifgy4j8eWwP8cUi/wDjpP8ASvd9a0Wz1iAJdJ868pIv3lNfO/w5ma18a6S443XCp+Dcf1r6aFAbHCDwxqFnKY4sTQj7rA4IH0rYs9DnwpmKrjt1ro6KVh8zK9pZx2y/IMserHrViiimSIR6daAex60tIRmgBaKTOOv50tABRRSE4FACFgKY5Jozn8acq9zQAqHI5p1FFABRRRQAUUUUAFIRmlooAaSQCD6VBVhvun6VXpgFFFFAh0f3xU9QR/fFT0hhTeR06U6kNAC5pCfSmEHNPAoAAPzpaKKACiiigAooooAKKKKACiiigAryP48ygLpkYJzh2x+VeuV4n8eHP9rWSnoICf1oA8huH3MAeRjFV47d55lihG5nOAKuwwma5wsLSrglgDjHvWqiCD7PHGkC3EWHEhOFnTvg0DYsMLtZsyi0uLuNQgcfMGA/hI9aV/ECjQYoIIo0ljkZQjruMR65U9qzdWmht4Fj07AimbzGYPlgw7e1ZAHvz3oESN8xJbknrUDKUPtUoNLjmgCAoG6cUsUr28m7ANOZCnzLyvcelOUq4oA2dE1qXT7gXNjK0co5Kk8N7H2r1fw/4qt9c8uKOORbrZukjCEgY6nI7V4Y8JB3RkjFdXpfjCfSvDJsNPsxBcySHzr5W+Zhg8H060rDTsezoyyoCpBHbFORcNkZBFeO6L49vNLgWF40uIlORubBH410Vn8VrR2CXWmSJn+JJN39KVi+ZHpizbIyWHTvWKJ21/UBbxZNjA2Z5BwGI/hHrXN6r4s069NvbrrEFpDLzIUy7Y9OmAfrXVaLqmjrHa6dpFzC25sKgcFpG/qTQBrXkqSJIkYxsAwKt6bpUtxEin5Y+rMau6XohVjNeDknOz/Gt5VCgBQAB2FFhOXYr2dpFaR7Il+rdzVmmtSKD3qiB3X6UtFFABXnfxsi3+HLQgci7H/oLV6JXC/GNc+ElfGdl1Gf5j+tA0eM+Hd1t4l0x2GNt1Gc/wDAhX1AOlfLMlwIriJ0OHRwQfcGvqG0mFzawzr0ljVx+IzSQMlooopiCiiigAooooAKQcfSlqJz83Xj0oAcxB4poGfrQOtPQDGe9ACKvc0+iigAooooAKKKKACiiigAooooARvun6VXqw33T9Kr0wCiiigQ6P74qeoI/vipicfWkMCcUAdz1oApaACk5HXpS0UAFFJjHT8qAc0ALRRRQAUUUUAFFFFABRRQfagArx345WE1xqGmyRRsymNlYgZxyK9f38V538X7NpbCyuxK6i3kYsE6sMf/AFqAPGXVLL7YIrdovJUAySfMJRn0NYur6h9rby4l2wKcqCoBz3+mfSpNVvJrmZ98j+WWLBC2QKzXGRQDI0x3p3A7im+Sp7UBFHGOKAHhh6inAj1qPy0//XThCp9PzoAlGKikhI+eP8RTvsxI/dyY/Gmlp4T84yPWgAjlzwetSoxVt0bFW9u9MJhuP+mcnr2NMwyHD8UANnglJ3YXB7r0qSKwmLDdwO59qaJD90N8vera3ZYnaMjFAEMcY83zX4ReFHrV6x1Ke2u0uLeVonjbKupwQazJHZ2wT/8AWpyA7gF6/wAqAPovwT8T7HUI7Sw1PzI7kqENw+Nrv/SvSM7unT1r5Cs5vspQxtypz+Ne+/Dr4g2+txJp+oskN6igKxOFlA/rQM9CxSYpetFAhAex60tFJ0+lAC1ynxRt/tHgnUMdY9kg/BgT+ma6us7xDpp1fRbzTw4Q3ETIGPYkUAfL13GwlLAEDORX014Qn+0+F9Kl7m1jz+AA/pXgWuaPqnh66FnqtvhCcLIBlXHsa9z+H0MsHg/TI5wQ4iPX0LEj9MUkUzoqKKKZIUUUUAFFNYkYxTCxPFADmbPSm7STxQOSKkAA6UACjAozjr0paKACim4x0pQc0ALRRRQAUUUUAFFFFABRRRQAjfdP0qvU7nCn6VBTAKKKKBDo/vipgPzqGP74qekMKKKKACiiigApCO/elooAQH1paQjNGcdfzoAWiiigAooooAKRulBOKAM8mgCMDtzXJfFa0M/g25aPO+JlfI7DPP6V2VV9RtI76xuLSUApNGUIPuKAPj68GJCPSqjGtzxRpsuk6tc2UwxJDIUPv71hNQNgOfumgkj7y00KvqQacC69twoEOVkPfH1p4Q9Uwfb1pmY36jBpwi5yh/KgB6xox5DIfVTUxjkRSRiZB1B61ErSDrz9asRSgHBGDQBWW3guBuhbDd19KSS3cIY5AT/danXsC7xLCwVzzjPWkhvpMYkAYe9AFRIPMmCDIGMnParExWMeXGOe9OlukUkxL8zdarAFmyx60AKq+nX1qdECdTz6UKAg96cP50AKrYNW7a4KOGViCO4qnSqxFAz6E+E/jKPUrJNIvpT9riH7pnbJkX0+or0mvkLTr6W0njmgkaORGDKynkGvor4deM4vElgILllXUIl+df74/vCgDs6KKKBDcY6flSg5paQj060AVdT02z1W1a21C3SeFv4XHT3HoasQRJBDHDENqRqFUegHApwPr1paACiiigAoopCew60ANftSBc9elPAxS0AIAB2paKKACiiigApCO4paKAEB9etLSEZozjrQAtFFFABRRRQAUhOKCaAKAEI+Uk9cVBVhvun6VXoAKKKKYjnpfHGgW8mPtTS47xRlhUtt450C4YL9raLPeVCorxletPpDPoO2uYLqIS20ySof4kbIqWvBNK1W+0mcTWE7RsOq9Vb6ivW/CfiaDxBbEECO7jH7yLP6j2oA6CiiigAooooAKKKKAE5HTpSg5opDxzQAtITikDZ/GlA7nrQAAdzS0UUAFFFFAHhPx50jyNYt9RRMJcx7WIH8S/8A1q8iYc19N/GDSP7T8HzSqMyWjCUfToa+Z5lwxFAEIK9DTipXlDxTD19qVWK/dOfagBwKt95fxFP2FeUORTco/X5WoG9OQMj2oAnjl7OKsBQ30qoro/sanhbacZzQAXEGYTnnb8yt6etZszAOQhBz3rZdt0TLnqCKxXgZCQeooAavX3qwhCj/AGv5VADtHHX+VSKaAJlNPHNQhj6U8McelAEuOKaTTN/vn6Ubj2H50ASo2DW34e1i50jUYLy0kKSxtke/sawAxqxC5B60DR9YeFPEFt4j0mK9tyAxGJI+6N3FbNfN/wAOvFcvh3VkZ2JtJSFmT29fqK+jIJo7iFJoWDxuoZWHQg0CJKKKKAEIzRnHX86WigAopu7FAORxQApPYUAYoAxS0AFFFFABRRRQAUUUUAFFFFABRRRQA3kfSnA5opjsEI680APpCfzpquGyBnI9acBigAA/OloooARvun6VXqw33T9Kr0wCiiigR534c+Hk0rzNroaJQAI1icZJ7k/570eIfh9PDJCdDDSxkHzFlcZU9v8APtWBoUfiLXLhorC7uG2DLu8xCr6ZNO1pPEOiXKwX93cKzDKMsxKsPY0hmZqemXulXHkX8DQuRkZ6MPUHvS6PqM2k6jDe25w0bcj+8O4rqtYnk1P4e2d5esZbmK42iRvvEcjk/wCelcTQB9BWdzHd2sNzCcxyoHX6Gpq5j4c3DXHheAMc+U7Rj8Dn+tdPQAUUUUAFFFITigAJxSYJFKBnk0tADQMdadRSYx0oAWikBzS0AFFFFAEN5bpdWk1vIAUlQoQfcV8j+I7B9N1a6tHUgwysuD7Gvr6vnX42aZ9j8WSzKMLcoJPx6GgaPNG9cU3Ck8cGnsKYGHRhmgQvPcA05SB0yKTYD900YYd6AJMg9QD+FSx7SwwozUSuR95QasKI2Hy8P/KgCwileoGao3isJGypwTxV2JmPyt1HevXrDwJZeMPAGnXdsFg1OKNkEmOJMMcBv8aBng5UjrThWxr2hX2i3slpf27xSIeQRwfcHvWSVx9KBCj604AZ55/GmUtAEoKj0oyKZnj7tGT6UAPzUkbYPFQgmnqxB60AaED85Fe3/BzxSbm3OiXb5kjBaAseq91/CvCYXPetrQtSm03UILy3crJE4YEUDPq6is/QdUh1nSre/tz8kq5Iz909x+daFAgpCfSgnsKAMUAIVyaUccUtIRmgBaKTOOv50tABRRRQAUUUUAFFFFABRRRQAUUUhOKAFJxTGTfgnjFOAzyaWgBioEJJJJNPopvT6UAOooBzRQAjfdP0qvVhvun6VXpgFFFFAjy/4d+I7LRXurfUCY45yrLKFJwRng4571L451uDxHeWVlo6PceWThgpBdjjgA844qPyvAfaa/z+Nc5oepyaRqkF/Eiu8RPyt0IIwf0NIZY1M6xptqukaissMIPmLC2ME+oI61lVueK/EcniK6hla3WCOFSqIG3Hnrk/gKzdMsZtTv4bO3XMkrY+g7mgD1b4bwNB4XhZhjzZGkH0zj+ldRUFhax2NlBawj5IkCD3xU9ABRRUbPQA8nFAGeTSIcjntTqACiiigAooooAQjuOtAPrS0hGaAFopM460tABXkvx800SWFhqKjlGMTfQ8ivWq5T4oaeNQ8F6gpGWiUSr9QaAPlmQYJqLgnmrNwuHNVmFABgqeKer54cfjTUbPympCuwepPf0oAfjYMjnP6UoXncOtRrleh4PapkIPsaALEZyBnrX0P8F5fM8Fouf9XcOv8j/WvneKvffgXJu8LXKf3bsn81X/AAoGdb4m8MaZ4lszb6jCCwB2SgfMh9Qa+ePHXgLUfC9yWZTLZsfknUcH2Poa+oarajY22pWctpeRLLDIuGVhQI+MimD/AEpK7j4i+DZvDOrMgUm1lOYJccEeh9xXFOhBIYYPrQAylyPU0h9KOlADh/vU8DNRjb3FPAWgCxHkdqtRNgiqC4HQ1esYZLmQohA2jLMxwFHqaAPV/g94pFnfHSLp8QXJ/dEnhX/+v/hXtJOeBXzFZWsccUKrIEnUGTz05U46HdngV7r8PPEq+I9DR5GH2uABJx6ns340DOpAxS0UUCCiiigApOn0paKAAHNFIR3FAOfrQAtFFFABRRRQAUUUhOKAAnFAHOTQB3PWloAKKKKACiiigBCO4oBzS0hGaABvun6VXqcnCkH0qCmAUUUUCPnTUbv7DZvcBN+zHy5xnJA/rWL/AMJSf+fQf99//Wr1j4leDdIsvCd/e2izROhjwokyvMijvk9/WvFlsoR13H6mkM008TyO21LPJ/3663wr49h8Pq8g0dZ7p+DK02No9AMVz3hHQ49c1uDTTL9nSTJLquTxXql78JNEFk/2e7vY5lXIkZlYZ9xgUAZv/C6JP+gKv/f/AP8ArUf8Lok/6Aq/9/8A/wCtXld1F9nuZYd27y3K5xjODUeOM0Aern4zOc/8SVf+/wCf8KT/AIXK/wD0BV/7/wD/ANavKaKAPWB8Z5B00VP+/wD/APWo/wCF0Sf9AVf+/wD/APWryfvRQB6x/wALok/6Aq/9/wD/AOtR/wALok/6Aq/9/wD/AOtXk9FAHrH/AAuiT/oCr/3/AP8A61H/AAuiT/oCr/3/AP8A61eT0UAesf8AC6JP+gKv/f8A/wDrUf8AC6JP+gKv/f8A/wDrV5PRQB6x/wALnk/6Aq/9/wD/AOtQPjPIP+YKv/f8/wCFeT0UAesf8Lok/wCgKv8A3/8A/rVDefF83dpNbSaIhSVCjfv+xGPSvLaKAK01oJGJDYGeB1xUJ04H/lp+lX6KAKH9nDHEmD64oXT8ceZkfSr9FAFEWGP+Wn6U4WWP4/0q5RQBXS22n736V3XgTx2/hGxuLVbEXImkD5Mm3HGPSuNooA9Y/wCF0Sf9AVf+/wD/APWo/wCF0Sf9AVf+/wD/APWryeigD0PxL8SrbxHpUun3+hIUcfK4n5RuxHFeZPZh+rfTirVFAFD+zR/z04+lJ/Zg/wCev6VoUUAZ400D/lp+lL/Zw/v/AKVfooAorYbSCJP0rXe6V5AzQoEaPZKqjG/nOc+uarUUAPuXEqxRxL5cUakKuc9Tkkmtnwd4mufC2pi7gTzkKlZIi2A4rDooA9Y/4XRJ/wBAVf8Av/8A/Wo/4XRJ/wBAVf8Av/8A/WryeigD1j/hdEn/AEBV/wC//wD9aj/hdEn/AEBV/wC//wD9avJ6KAPWP+F0Sf8AQFX/AL//AP1qP+F0Sf8AQFX/AL//AP1q8nooA9Y/4XRJ/wBAVf8Av/8A/WoPxnc/8wVf/Ag/4V5PRQB6x/wueT/oCr/3/P8AhR/wuiT/AKAq/wDf/wD+tXk9FAHrH/C6JP8AoCr/AN//AP61H/C6JP8AoCr/AN//AP61eT0UAesf8Lok/wCgKv8A3/8A/rUf8Lnk6/2Kv/f8/wCFeT0UAesf8Lok/wCgKv8A3/8A/rUf8Lok/wCgKv8A3/8A/rV5PRQB6x/wuiT/AKAq/wDf/wD+tR/wuiT/AKAq/wDf/wD+tXk9FAHrH/C6JP8AoCr/AN//AP61H/C6JP8AoCr/AN//AP61eT0UAesf8Lok/wCgKv8A3/8A/rUf8Lok/wCgKv8A3/8A/rV5PRQB7Dpvxde/1K0sjo6p9onSLd5+du5gM9PevTK+ZPDP/IyaR/1/Qf8Aoxa+m6ACiiimI//Z" alt="Foto acuan: pria memanggul karung goni dengan badan condong ke depan">
+    <figcaption>Foto acuan: memanggul karung di pundak. Tekan Seperti foto untuk menirunya.</figcaption>
+   </figure>
+  </section>
+
+  <!-- Langkah 3: pilih bagian tubuh, lalu geser slider tiap sendi -->
+  <h2>3. Atur sendi tubuh</h2>
+  <div class="row" id="tabs"></div>
+  <div id="rows"></div>
+  <div class="tg"><label><input type="checkbox" id="rot"> Putar otomatis</label><label><input type="checkbox" id="gh"> Mode tembus</label></div>
+ </aside>
+</div>
+
+<!-- Pustaka 3D: three.js dan OrbitControls (untuk memutar kamera dengan mouse atau jari) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const $=s=>document.querySelector(s),D=Math.PI/180; // $ = pemilih elemen singkat, D = derajat ke radian
+
+/* ---------- a. SETUP three.js ---------- */
+const cv=$('#c'),R=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));R.shadowMap.enabled=true;
+const S=new THREE.Scene();S.background=new THREE.Color(0x20262a);
+const cam=new THREE.PerspectiveCamera(40,1,.1,50);
+const ctl=new THREE.OrbitControls(cam,cv);ctl.enableDamping=true;ctl.minDistance=.8;ctl.maxDistance=7;ctl.autoRotateSpeed=1.5;
+S.add(new THREE.HemisphereLight(0xffffff,0x556068,.85));
+const dl=new THREE.DirectionalLight(0xffffff,.8);dl.position.set(2,4,3);dl.castShadow=true;dl.shadow.mapSize.set(1024,1024);
+Object.assign(dl.shadow.camera,{left:-3,right:3,top:3,bottom:-3});S.add(dl);
+const C={skin:0xa9744f,shirt:0x6e6d3e,pants:0xb7a78a,shoe:0xf2f2f2,dark:0x1b1b1b,wood:0xd2a46a,woodD:0xb98a52};
+const mat=c=>new THREE.MeshStandardMaterial({color:c,roughness:.8});
+
+/* ---------- b. LINGKUNGAN ---------- */
+// Dua grup ruangan. Hanya satu yang terlihat, tergantung simulasi yang dipilih.
+const envSit=new THREE.Group(),envLift=new THREE.Group();S.add(envSit,envLift);
+let G=envSit; // grup tujuan untuk fungsi E
+// E = buat balok (lebar, tinggi, dalam, warna, posisi x y z, rotasi x) di grup G
+const E=(w,h,d,c,x,y,z,rx=0)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c));m.position.set(x,y,z);m.rotation.x=rx;m.castShadow=m.receiveShadow=true;G.add(m);return m};
+// Bagian yang dipakai bersama: lantai, papan tulis di dinding, hiasan, pot tanaman
+const fl=new THREE.Mesh(new THREE.PlaneGeometry(10,10),mat(0xc9c4bb));fl.rotation.x=-Math.PI/2;fl.position.y=.04;fl.receiveShadow=true;S.add(fl);
+const cc=document.createElement('canvas');cc.width=1024;cc.height=512;const g=cc.getContext('2d');
+g.fillStyle='#2b3236';g.fillRect(0,0,1024,512);g.lineCap='round';
+for(let i=0;i<40;i++){const y=Math.random()*512;g.strokeStyle='rgba(220,230,235,'+(.03+Math.random()*.05)+')';g.lineWidth=20+Math.random()*50;g.beginPath();g.moveTo(Math.random()*300,y);g.bezierCurveTo(300,y-40,700,y+40,1024-Math.random()*200,y+(Math.random()-.5)*60);g.stroke()}
+const wall=new THREE.Mesh(new THREE.PlaneGeometry(8,4),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(cc)}));wall.position.set(0,2.04,-1.8);S.add(wall);
+const hex=new THREE.Mesh(new THREE.TorusGeometry(.14,.018,6,6),mat(C.wood));hex.position.set(-1.1,1.9,-1.76);S.add(hex);
+const pot=new THREE.Mesh(new THREE.CylinderGeometry(.1,.08,.18,12),mat(0xeeeeee));pot.position.set(-1.4,.13,-.9);S.add(pot);
+for(let i=0;i<5;i++){const l=new THREE.Mesh(new THREE.ConeGeometry(.03,.4,6),mat(0x4f8a3f));l.position.set(-1.4+(i-2)*.03,.45,-.9);l.rotation.z=(i-2)*.18;S.add(l)}
+// Ruangan simulasi DUDUK: kursi (dudukan, sandaran, 4 kaki), meja, rak bawah meja, buku
+E(.46,.04,.44,C.woodD,0,.43,.02);E(.44,.36,.025,C.woodD,0,.69,-.22,-.15);
+[[-.2,.2],[.2,.2],[-.2,-.2],[.2,-.2]].forEach(p=>E(.035,.39,.035,C.woodD,p[0],.235,p[1]));
+E(1.7,.04,.7,C.wood,0,.74,.8);
+[[-.75,.5],[.75,.5],[-.75,1.1],[.75,1.1]].forEach(p=>E(.05,.7,.05,C.woodD,p[0],.39,p[1]));
+E(1.5,.03,.5,C.wood,0,.2,.8);E(.3,.03,.22,0xe8e2d4,-.45,.775,.75);E(.28,.025,.2,0xd8cdb8,-.45,.8,.75);
+// Ruangan simulasi ANGKAT: rak tiga tingkat di belakang dan matras tempat berdiri
+G=envLift;
+[-.85,.85].forEach(x=>[-1.3,-.9].forEach(z=>E(.05,1.55,.05,C.woodD,x,.82,z)));
+[.4,.95,1.5].forEach(y=>E(1.8,.04,.5,C.wood,0,y,-1.1));
+E(.9,.015,.9,0x3a4a52,0,.048,0);
+
+/* ---------- c. MANEKIN ---------- */
+// reg = daftar bentuk per bagian tubuh (untuk disorot / diklik), N = daftar node sendi
+const reg={head:[],torso:[],armL:[],armR:[],legL:[],legR:[]},N={};
+// part = pasang bentuk ke induk; seg = tabung (anggota badan); ball = bola (sendi); node = titik putar sendi
+const part=(geo,c,rg,p,x=0,y=0,z=0,sc)=>{const m=new THREE.Mesh(geo,mat(c));m.position.set(x,y,z);if(sc)m.scale.set(...sc);m.castShadow=true;m.userData.region=rg;p.add(m);reg[rg].push(m);return m};
+const seg=(p,len,r1,r2,c,rg,up,sc)=>part(up?new THREE.CylinderGeometry(r2,r1,len,16):new THREE.CylinderGeometry(r1,r2,len,16),c,rg,p,0,up?len/2:-len/2,0,sc);
+const ball=(p,r,c,rg,x,y,z,sc)=>part(new THREE.SphereGeometry(r,16,12),c,rg,p,x,y,z,sc);
+const node=(n,p,x,y,z)=>{const o=new THREE.Group();o.position.set(x,y,z);p.add(o);N[n]=o;return o};
+// root = titik panggul yang bisa naik turun. pel = panggul yang bisa condong (engsel pinggul).
+// Kaki menempel ke root (tidak ikut condong), badan menempel ke pel.
+const root=node('root',S,0,.55,0),pel=node('pel',root,0,0,0);
+ball(pel,.1,C.pants,'torso',0,0,0,[1.5,.85,1.05]);
+const lum=node('lum',pel,0,.07,0);seg(lum,.2,.14,.15,C.shirt,'torso',1,[1.1,1,.75]);
+const tho=node('tho',lum,0,.2,0);seg(tho,.3,.15,.18,C.shirt,'torso',1,[1.2,1,.7]);
+const neck=node('neck',tho,0,.31,0);seg(neck,.07,.045,.045,C.skin,'head',1);
+ball(neck,.095,C.skin,'head',0,.17,0,[.92,1.15,1.05]);
+part(new THREE.SphereGeometry(.1,16,12,0,Math.PI*2,0,Math.PI/2),C.dark,'head',neck,0,.18,-.012,[.95,1.1,1.1]);
+ball(neck,.05,C.dark,'head',0,.11,.05,[1,.8,.8]);ball(neck,.012,C.skin,'head',0,.165,.105);
+[-1,1].forEach(s=>part(new THREE.TorusGeometry(.027,.004,6,16),C.dark,'head',neck,s*.037,.185,.098));
+// Lengan (bahu, siku, pergelangan) dan kaki (pinggul, lutut, pergelangan kaki), kiri dan kanan
+for(const [s,k] of [[1,'L'],[-1,'R']]){
+ const a='arm'+k,l='leg'+k;
+ const sh=node('sh'+k,tho,s*.225,.26,0);ball(sh,.06,C.shirt,a);seg(sh,.3,.05,.042,C.shirt,a);
+ const el=node('el'+k,sh,0,-.3,0);ball(el,.043,C.shirt,a);seg(el,.26,.042,.033,C.shirt,a);
+ const wr=node('wr'+k,el,0,-.26,0);ball(wr,.033,C.skin,a);seg(wr,.1,.035,.028,C.skin,a,0,[1.25,1,.55]);
+ if(k==='R')part(new THREE.BoxGeometry(.07,.14,.01),C.dark,a,wr,0,-.07,.035);
+ const hp=node('hp'+k,root,s*.09,-.02,0);ball(hp,.07,C.pants,l);seg(hp,.42,.075,.058,C.pants,l);
+ const kn=node('kn'+k,hp,0,-.42,0);ball(kn,.058,C.pants,l);seg(kn,.42,.056,.04,C.pants,l);
+ const an=node('an'+k,kn,0,-.42,0);part(new THREE.BoxGeometry(.09,.07,.26),C.shoe,l,an,0,-.035,.08);
+}
+const ALL=[].concat(...Object.values(reg));
+
+/* ---------- d. BEBAN 3D ---------- */
+// Satu grup beban berisi dua bentuk: kardus (dipegang dua tangan) dan karung goni (di pundak)
+const load=new THREE.Group();S.add(load);
+const boxM=new THREE.Mesh(new THREE.BoxGeometry(.34,.28,.3),mat(0xc8a064));
+const sackM=new THREE.Mesh(new THREE.SphereGeometry(.2,20,14),mat(0xb39766));sackM.scale.set(1,1.5,.85);
+boxM.castShadow=sackM.castShadow=true;load.add(boxM,sackM);
+const v1=new THREE.Vector3(),v2=new THREE.Vector3(),qt=new THREE.Quaternion(),tilt=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),22*D);
+
+/* ---------- e. TABEL SENDI ---------- */
+// Kolom: id, wilayah, label, node, sumbu putar, tanda arah, min, maks, ideal duduk [bawah,atas], ideal angkat [bawah,atas]
+// Wilayah arm/leg otomatis dibuat kiri (L) dan kanan (R). tanda 's' = mengikuti sisi tubuh. null = sendi tidak dipakai di mode itu.
+const T=[
+ ['nf','head','Leher: tunduk atau dongak','neck','x',1,-40,60,[0,15],[-20,15]],
+ ['nt','head','Leher: miring ke samping','neck','z',1,-40,40,[-5,5],[-5,5]],
+ ['nr','head','Leher: menoleh','neck','y',1,-70,70,[-15,15],[-15,15]],
+ ['pv','torso','Panggul: condong ke depan (engsel pinggul)','pel','x',1,-10,90,null,[0,60]],
+ ['lf','torso','Pinggang: bungkuk atau sandar','lum','x',1,-30,60,[-10,10],[-5,10]],
+ ['lt','torso','Pinggang: miring','lum','z',1,-30,30,[-5,5],[-5,5]],
+ ['lr','torso','Pinggang: putar','lum','y',1,-45,45,[-10,10],[-10,10]],
+ ['tf','torso','Punggung atas: bungkuk','tho','x',1,-20,40,[-5,10],[-5,10]],
+ ['sf','arm','Bahu: angkat ke depan','sh','x',-1,-50,170,[0,25],[0,80]],
+ ['sa','arm','Bahu: buka ke samping','sh','z','s',0,150,[0,20],[0,20]],
+ ['sr','arm','Bahu: putar','sh','y','s',-60,60,[-10,10],[-10,10]],
+ ['ef','arm','Siku: tekuk','el','x',-1,0,145,[90,120],[20,120]],
+ ['wf','arm','Pergelangan tangan: tekuk','wr','x',-1,-60,70,[-10,10],[-15,15]],
+ ['wd','arm','Pergelangan tangan: miring','wr','z','s',-25,30,[-10,10],[-10,10]],
+ ['hf','leg','Pinggul: angkat paha','hp','x',-1,0,120,[85,110],[0,100]],
+ ['ha','leg','Pinggul: buka paha','hp','z','s',-30,40,[-5,15],[0,20]],
+ ['kf','leg','Lutut: tekuk','kn','x',1,0,130,[85,110],[20,110]],
+ ['af','leg','Pergelangan kaki','an','x',1,-20,40,[-5,10],[-10,15]]
+];
+// Ubah tabel T menjadi daftar sendi aktif untuk satu mode
+function makeJoints(m){const o=[];
+ for(const r of T){const d=r[m==='duduk'?8:9];if(!d)continue;
+  const sd=/arm|leg/.test(r[1])?[[1,'L'],[-1,'R']]:[[1,'']];
+  for(const [s,k] of sd)o.push({id:r[0]+k,rg:r[1]+k,lb:r[2],nd:r[3]+k,ax:r[4],sg:r[5]==='s'?s:r[5],mn:r[6],mx:r[7],lo:d[0],hi:d[1]})}
+ return o}
+// ex: salin nilai satu sendi ke kiri dan kanan sekaligus
+const ex=o=>{const r={};for(const k in o){if(/^(sf|sa|sr|ef|wf|wd|hf|ha|kf|af)$/.test(k)){r[k+'L']=o[k];r[k+'R']=o[k]}else r[k]=o[k]}return r};
+
+/* ---------- f. DATA SIMULASI ---------- */
+// V: buat 5 sudut kamera (posisi dan titik pandang) untuk tinggi sasaran y dan kedalaman z
+const V=(y,z)=>({Perspektif:[[2.4,y+.65,z+2.3],[0,y,z]],Depan:[[0,y+.35,z+3.3],[0,y,z]],Samping:[[3.4,y+.15,z],[0,y,z]],Belakang:[[0,y+.45,z-3.2],[0,y,z]],Atas:[[0,y+3.4,z+.7],[0,y-.3,z]]});
+// Tiap simulasi: ikon, judul, deskripsi, ruangan, sudut kamera, petunjuk, dan postur siap pakai (P)
+// Postur punya: nama n, nilai sudut v, dan (mode angkat) jenis beban load serta berat kg
+const MODES={
+ duduk:{icon:'🪑',n:'Duduk di meja',d:'Postur kerja di depan meja dan kursi.',env:envSit,vw:V(.85,.35),
+  hint:'Seret untuk memutar, cubit atau scroll untuk zoom, ketuk bagian tubuh untuk memilihnya.',
+  P:{
+   foto:{n:'Seperti foto',v:{...ex({nf:14,nt:0,nr:0,lf:-10,lt:0,lr:0,tf:6,sf:18,sa:6,sr:0,ef:105,wf:25,wd:0,hf:88,ha:5,kf:80,af:10}),hfL:70,kfL:40,haL:15}},
+   ideal:{n:'Ideal',v:ex({nf:5,nt:0,nr:0,lf:0,lt:0,lr:0,tf:2,sf:10,sa:5,sr:0,ef:100,wf:0,wd:0,hf:95,ha:5,kf:95,af:3})},
+   bungkuk:{n:'Membungkuk',v:ex({nf:45,nt:8,nr:0,lf:30,lt:0,lr:0,tf:25,sf:40,sa:20,sr:0,ef:75,wf:40,wd:15,hf:75,ha:20,kf:60,af:25})}}},
+ angkat:{icon:'📦',n:'Angkat barang',d:'Mengangkat atau memanggul beban dari posisi berdiri.',env:envLift,vw:V(.9,0),
+  hint:'Seret untuk memutar, scroll untuk zoom. Beban mengikuti tangan atau pundak. Atur berat di panel.',
+  P:{
+   foto:{n:'Seperti foto',load:'bahu',kg:20,v:{...ex({nf:-15,nt:0,nr:0,pv:15,lf:15,lt:0,lr:0,tf:15,sf:40,sa:10,sr:0,ef:135,wf:0,wd:0,hf:10,ha:8,kf:15,af:0}),sfR:60,hfL:25,kfL:30}},
+   ideal:{n:'Teknik ideal',load:'tangan',kg:12,v:ex({nf:-10,nt:0,nr:0,pv:40,lf:2,lt:0,lr:0,tf:2,sf:44,sa:5,sr:0,ef:20,wf:0,wd:0,hf:70,ha:10,kf:100,af:5})},
+   dada:{n:'Bawa di dada',load:'tangan',kg:12,v:ex({nf:0,nt:0,nr:0,pv:3,lf:0,lt:0,lr:0,tf:0,sf:45,sa:5,sr:0,ef:95,wf:0,wd:0,hf:5,ha:8,kf:12,af:2})},
+   bungkuk:{n:'Membungkuk',load:'tangan',kg:12,v:ex({nf:30,nt:5,nr:0,pv:25,lf:40,lt:0,lr:0,tf:25,sf:90,sa:15,sr:0,ef:5,wf:25,wd:10,hf:10,ha:10,kf:8,af:3})}}}
+};
+
+/* ---------- g. UI ---------- */
+const RG={head:'Kepala dan leher',torso:'Badan',armL:'Lengan kiri',armR:'Lengan kanan',legL:'Kaki kiri',legR:'Kaki kanan'};
+const cur={},tgt={}; // cur = sudut tampil saat ini, tgt = sudut tujuan (bergerak halus)
+let mode='',J=[],sel='head',tw=null,loadType='tangan',kg=10;
+// mk: buat tombol dan tempel ke induk
+const mk=(par,t,cls,fn,d)=>{const b=document.createElement('button');b.className=cls;b.textContent=t;b.onclick=fn;if(d)b.dataset.k=d;par.appendChild(b);return b};
+// go: pindahkan kamera (langsung atau dengan animasi 0,7 detik)
+function go(v,now){const p=new THREE.Vector3(...v[0]),q=new THREE.Vector3(...v[1]);if(now){cam.position.copy(p);ctl.target.copy(q);tw=null}else tw={t:performance.now(),p0:cam.position.clone(),q0:ctl.target.clone(),p1:p,q1:q}}
+// Sorot bagian tubuh yang sedang dipilih
+function hl(){for(const k in reg)reg[k].forEach(m=>m.material.emissive.setHex(k===sel?0x1b4a73:0))}
+// select: tampilkan slider semua sendi pada satu bagian tubuh
+function select(k){sel=k;[...$('#tabs').children].forEach(b=>b.classList.toggle('on',b.dataset.k===k));hl();const rows=$('#rows');rows.innerHTML='';
+ J.filter(j=>j.rg===k).forEach(j=>{const d=document.createElement('div');d.className='r';
+  d.innerHTML='<label><span><i class="dot"></i>'+j.lb+'</span><b></b></label><input type="range" min="'+j.mn+'" max="'+j.mx+'" step="1" aria-label="'+j.lb+'"><small>Rentang ideal '+j.lo+'° sampai '+j.hi+'°</small>';
+  j.dot=d.querySelector('.dot');j.val=d.querySelector('b');j.inp=d.querySelector('input');j.inp.value=cur[j.id];
+  j.inp.oninput=()=>{tgt[j.id]=cur[j.id]=+j.inp.value};rows.appendChild(d)})}
+// Sinkronkan kontrol beban dengan variabel loadType dan kg
+function syncLoad(){[...$('#ltype').children].forEach(b=>b.classList.toggle('on',b.dataset.k===loadType));$('#kg').value=kg;$('#kgv').textContent=kg+' kg'}
+// Terapkan postur siap pakai (instan = langsung tanpa animasi)
+function applyPreset(p,instant){J.forEach(j=>{tgt[j.id]=p.v[j.id]??0;if(instant)cur[j.id]=tgt[j.id]});if(p.load){loadType=p.load;kg=p.kg;syncLoad()}}
+// setMode: ganti simulasi. Ruangan, sendi, postur, kamera, dan petunjuk ikut berubah.
+function setMode(m,first){mode=m;const M=MODES[m];J=makeJoints(m);
+ envSit.visible=m==='duduk';envLift.visible=m==='angkat';
+ root.position.set(0,.55,0);pel.rotation.set(0,0,0);
+ [...$('#modes').children].forEach(b=>{const on=b.dataset.k===m;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on)});
+ $('#lift').hidden=m!=='angkat';$('#hint').textContent=M.hint;
+ const pre=$('#pre');pre.innerHTML='';Object.keys(M.P).forEach(k=>mk(pre,M.P[k].n,'b',()=>applyPreset(M.P[k])));
+ const hud=$('#hud');hud.innerHTML='';Object.keys(M.vw).forEach(k=>mk(hud,k,'b',()=>go(M.vw[k])));
+ applyPreset(M.P.foto,true);select(sel);go(M.vw.Perspektif,first);last=''}
+// Bangun kartu simulasi, tab bagian tubuh, dan kontrol beban sekali di awal
+Object.keys(MODES).forEach(k=>{const M=MODES[k],b=document.createElement('button');b.className='mc';b.dataset.k=k;
+ b.innerHTML='<span class="ic">'+M.icon+'</span><b>'+M.n+'</b><small>'+M.d+'</small>';b.onclick=()=>{if(k!==mode)setMode(k)};$('#modes').appendChild(b)});
+Object.keys(RG).forEach(k=>{const b=mk($('#tabs'),'','b',()=>select(k),k);b.innerHTML='<i class="dot"></i>'+RG[k]});
+mk($('#ltype'),'Dua tangan (kardus)','b',()=>{loadType='tangan';syncLoad()},'tangan');
+mk($('#ltype'),'Di pundak (karung)','b',()=>{loadType='bahu';syncLoad()},'bahu');
+$('#kg').oninput=e=>{kg=+e.target.value;syncLoad()};
+$('#rot').onchange=e=>ctl.autoRotate=e.target.checked;
+// Mode tembus: bentuk tubuh dibuat setengah transparan
+$('#gh').onchange=e=>ALL.forEach(m=>{m.material.transparent=e.target.checked;m.material.opacity=e.target.checked?.4:1;m.material.depthWrite=!e.target.checked;m.material.needsUpdate=true});
+// Ketuk badan manekin untuk memilih bagian tubuh (raycaster); geseran lebih dari 5 px dianggap memutar kamera
+const ray=new THREE.Raycaster(),mo=new THREE.Vector2();let dn=null;
+cv.addEventListener('pointerdown',e=>dn=[e.clientX,e.clientY]);
+cv.addEventListener('pointerup',e=>{if(!dn||Math.hypot(e.clientX-dn[0],e.clientY-dn[1])>5)return;const r=cv.getBoundingClientRect();
+ mo.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(mo,cam);
+ const h=ray.intersectObjects(ALL,false)[0];if(h)select(h.object.userData.region)});
+new ResizeObserver(()=>{const s=$('#stage');R.setSize(s.clientWidth,s.clientHeight,false);cam.aspect=s.clientWidth/s.clientHeight;cam.updateProjectionMatrix()}).observe($('#stage'));
+
+/* ---------- h. LOOP ANIMASI ---------- */
+// st: status sendi. 0 = di rentang ideal, 1 = melenceng sampai 12 derajat, 2 = berisiko
+const st=(j,v)=>{const d=v<j.lo?j.lo-v:v>j.hi?v-j.hi:0;return d===0?0:d<=12?1:2};
+const COL=['var(--ok)','var(--wn)','var(--bd)'];
+let last='';
+setMode('duduk',true);
+(function tick(){requestAnimationFrame(tick);
+ // 1. gerakkan setiap sendi menuju sudut tujuan secara halus
+ for(const j of J){const d=tgt[j.id]-cur[j.id];cur[j.id]=Math.abs(d)>.05?cur[j.id]+d*.18:tgt[j.id];N[j.nd].rotation[j.ax]=j.sg*cur[j.id]*D}
+ const lift=mode==='angkat';
+ // 2. mode angkat: turunkan atau naikkan panggul supaya telapak kaki tetap menapak lantai
+ if(lift){const leg=k=>{const a=-cur['hf'+k]*D,b=a+cur['kf'+k]*D;return[-.02-.42*Math.cos(a)-.42*Math.cos(b),-.42*Math.sin(a)-.42*Math.sin(b)]};
+  const A=leg('L'),B=leg('R');root.position.set(0,Math.max(.11-A[0],.11-B[0]),-(A[1]+B[1])/2)}
+ // 3. letakkan beban: di antara dua tangan, atau di pundak
+ load.visible=lift;
+ if(lift){S.updateMatrixWorld(true);const hand=loadType==='tangan';boxM.visible=hand;sackM.visible=!hand;
+  if(hand){N.wrL.localToWorld(v1.set(0,-.08,0));N.wrR.localToWorld(v2.set(0,-.08,0));load.position.copy(v1).add(v2).multiplyScalar(.5);load.position.y=Math.max(load.position.y,.19);load.quaternion.identity()}
+  else{load.position.set(.12,.36,-.2);N.tho.localToWorld(load.position);N.tho.getWorldQuaternion(qt);load.quaternion.copy(qt).multiply(tilt)}}
+ // 4. hitung status tiap sendi, perbarui slider yang tampil, dan kumpulkan yang berisiko
+ let w=0,b=0;const bad=[],wr={};
+ for(const j of J){const v=Math.round(cur[j.id]),s=st(j,v);if(s===1)w++;if(s===2){b++;bad.push(j)}wr[j.rg]=Math.max(wr[j.rg]||0,s);
+  if(j.rg===sel&&j.val){j.val.textContent=v+'°';j.dot.style.background=COL[s];if(document.activeElement!==j.inp)j.inp.value=v}}
+ // 5. skor: kurangi 6 poin per sendi berisiko, 2,5 per sendi perlu perhatian, ditambah penalti beban (makin berat dan makin bungkuk makin besar)
+ const lp=lift?Math.round(Math.max(0,kg-8)*.25*(1+Math.max(0,cur.lf+cur.tf-10)/20)):0;
+ const sc=Math.max(0,Math.round(100-b*6-w*2.5-lp)),t=sc+'|'+b+'|'+w+'|'+lp+'|'+JSON.stringify(wr)+'|'+mode;
+ // 6. perbarui teks, bilah, saran, dan titik status tab hanya jika ada perubahan
+ if(t!==last){last=t;$('#sc').textContent=sc;const i=$('#bar i'),c=sc>=75?0:sc>=50?1:2;i.style.width=sc+'%';i.style.background=COL[c];
+  $('#lv').textContent=['Aman','Perlu perhatian','Berisiko tinggi'][c];$('#lv').style.color=COL[c];
+  $('#sum').textContent=b+' sendi berisiko, '+w+' sendi perlu perhatian, dari '+J.length+' sendi yang diukur.'+(lp?' Beban '+kg+' kg mengurangi '+lp+' poin.':'');
+  $('#tips').innerHTML=bad.length?'<b>Perbaiki dulu:</b> '+bad.slice(0,3).map(j=>j.lb+' ('+(j.rg.slice(-1)==='L'||j.rg.slice(-1)==='R'?(j.rg.slice(-1)==='L'?'kiri':'kanan')+', ':'')+'ideal '+j.lo+'° sampai '+j.hi+'°)').join('; ')+(bad.length>3?'; dan '+(bad.length-3)+' lainnya.':'.'):'Postur sudah baik, pertahankan.';
+  [...$('#tabs').children].forEach(x=>x.querySelector('.dot').style.background=COL[wr[x.dataset.k]||0])}
+ // 7. animasi perpindahan kamera, lalu gambar ulang
+ if(tw){const k=Math.min(1,(performance.now()-tw.t)/700),e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;cam.position.lerpVectors(tw.p0,tw.p1,e);ctl.target.lerpVectors(tw.q0,tw.q1,e);if(k>=1)tw=null}
+ ctl.update();R.render(S,cam)})();
+</script></body></html>
